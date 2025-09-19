@@ -3,6 +3,7 @@ set -e
 
 # Default configuration
 DRY_RUN=false
+AUTO_YES=false
 
 # Parse command line arguments
 while [[ "$#" -gt 0 ]]; do
@@ -14,6 +15,7 @@ while [[ "$#" -gt 0 ]]; do
             echo "Options:"
             echo "    -h, --help      Show this help message"
             echo "    -d, --dry-run   Show what would be deleted without deleting"
+            echo "    -y, --yes       Skip interactive confirmations and delete directly"
             echo ""
             echo "Arguments:"
             echo "    DAYS            Number of days of cache to keep (default: 7)"
@@ -21,6 +23,10 @@ while [[ "$#" -gt 0 ]]; do
             ;;
         -d|--dry-run)
             DRY_RUN=true
+            shift
+            ;;
+        -y|--yes)
+            AUTO_YES=true
             shift
             ;;
         *)
@@ -38,6 +44,27 @@ if ! [[ $DAYS_TO_KEEP =~ ^(0|[1-9][0-9]*)$ ]]; then
     echo "Error: DAYS must be a positive integer."
     exit 1
 fi
+
+# Function to ask for confirmation
+ask_confirmation() {
+    local message="$1"
+    
+    if [ "$AUTO_YES" = true ]; then
+        echo "✓ $message (auto-confirmed)"
+        return 0
+    fi
+    
+    echo -n "$message. Proceed? [Y/n]: "
+    read -r response
+    case "$response" in
+        [nN][oO]|[nN])
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
 
 # Get initial disk space
 free_storage=$(df -k / | awk 'NR==2 {print $4}')
@@ -65,15 +92,15 @@ if [ "$DRY_RUN" = true ]; then
     echo "- Node.js cache (npm, yarn)"
     echo "- Docker unused images and containers"
     echo "- System memory cache and swap"
-    
+
     if command -v brew >/dev/null 2>&1; then
         echo -e "\nHomebrew dry run results:"
         echo "Running: brew cleanup --dry-run --prune=${DAYS_TO_KEEP}"
         brew cleanup --dry-run --prune=${DAYS_TO_KEEP}
-        
+
         echo -e "\nRunning: brew autoremove --dry-run"
         brew autoremove --dry-run
-        
+
         echo -e "\nRunning: brew doctor"
         brew doctor
     else
@@ -84,80 +111,148 @@ fi
 
 echo "Starting macOS selective cleanup (removing files older than ${DAYS_TO_KEEP} days)..."
 
-echo "Clearing system and user cache files older than ${DAYS_TO_KEEP} days..."
-sudo find /Library/Caches/* -type f -mtime +${DAYS_TO_KEEP} \( ! -path "/Library/Caches/com.apple.amsengagementd.classicdatavault" \
-                                               ! -path "/Library/Caches/com.apple.aned" \
-                                               ! -path "/Library/Caches/com.apple.aneuserd" \
-                                               ! -path "/Library/Caches/com.apple.iconservices.store" \) \
-    -exec rm {} \; -print 2>/dev/null || echo "Skipped restricted files in system cache."
-
-find ~/Library/Caches/* -type f -mtime +${DAYS_TO_KEEP} -exec sudo rm -f {} \; -print || echo "Error clearing user cache."
-
-echo "Removing application logs older than ${DAYS_TO_KEEP} days..."
-sudo find /Library/Logs -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print 2>/dev/null || echo "Skipped restricted files in system logs."
-find ~/Library/Logs -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print || echo "Error clearing user logs."
-
-# Clear Temporary Files (Only files older than ${DAYS_TO_KEEP} days), excluding restricted files in /tmp
-echo "Clearing temporary files older than ${DAYS_TO_KEEP} days..."
-sudo find /private/var/tmp/* -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print 2>/dev/null || echo "Skipped restricted files in system tmp."
-find /tmp/* -type f -mtime +${DAYS_TO_KEEP} ! -path "/tmp/tmp-mount-*" -exec rm {} \; -print 2>/dev/null || echo "Skipped restricted tmp files."
-
-if command -v brew >/dev/null 2>&1; then
-    echo "Running Homebrew cleanup and cache clearing..."
-    brew cleanup --prune=${DAYS_TO_KEEP} || echo "Homebrew cleanup encountered an error."
-    brew autoremove || echo "Homebrew autoremove encountered an error."
-    brew doctor || echo "Homebrew doctor encountered an error."
+# System cache cleanup
+if ask_confirmation "Clear system cache files"; then
+    echo "Clearing system cache files older than ${DAYS_TO_KEEP} days..."
+    sudo find /Library/Caches/* -type f -mtime +${DAYS_TO_KEEP} \( ! -path "/Library/Caches/com.apple.amsengagementd.classicdatavault" \
+                                                   ! -path "/Library/Caches/com.apple.aned" \
+                                                   ! -path "/Library/Caches/com.apple.aneuserd" \
+                                                   ! -path "/Library/Caches/com.apple.iconservices.store" \) \
+        -exec rm {} \; -print 2>/dev/null || echo "Skipped restricted files in system cache."
+else
+    echo "Skipped system cache cleanup."
 fi
 
-echo "Emptying Trash (files older than ${DAYS_TO_KEEP} days)..."
-find ~/.Trash -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print || echo "Error cleaning Trash."
-find ~/.Trash -type d -empty -delete 2>/dev/null || echo "Error removing empty Trash directories."
+# User cache cleanup
+if ask_confirmation "Clear user cache files"; then
+    echo "Clearing user cache files older than ${DAYS_TO_KEEP} days..."
+    find ~/Library/Caches/* -type f -mtime +${DAYS_TO_KEEP} -exec sudo rm -f {} \; -print || echo "Error clearing user cache."
+else
+    echo "Skipped user cache cleanup."
+fi
 
-echo "Cleaning Safari caches..."
-find ~/Library/Safari/LocalStorage -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print 2>/dev/null || echo "Error cleaning Safari LocalStorage."
-find ~/Library/Safari/WebKit/MediaCache -type f -exec rm {} \; -print 2>/dev/null || echo "Error cleaning Safari MediaCache."
+# System logs cleanup
+if ask_confirmation "Clear system logs"; then
+    echo "Removing system logs older than ${DAYS_TO_KEEP} days..."
+    sudo find /Library/Logs -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print 2>/dev/null || echo "Skipped restricted files in system logs."
+else
+    echo "Skipped system logs cleanup."
+fi
 
-echo "Cleaning Spotify cache..."
-find ~/Library/Application\ Support/Spotify/PersistentCache/Storage -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print 2>/dev/null || echo "Error cleaning Spotify cache."
+# User logs cleanup
+if ask_confirmation "Clear user logs"; then
+    echo "Removing user logs older than ${DAYS_TO_KEEP} days..."
+    find ~/Library/Logs -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print || echo "Error clearing user logs."
+else
+    echo "Skipped user logs cleanup."
+fi
 
-echo "Cleaning Xcode derived data..."
-rm -rf ~/Library/Developer/Xcode/DerivedData/* || echo "Error cleaning Xcode derived data."
-rm -rf ~/Library/Developer/Xcode/Archives/* || echo "Error cleaning Xcode archives."
+# Temporary files cleanup
+if ask_confirmation "Clear temporary files"; then
+    echo "Clearing temporary files older than ${DAYS_TO_KEEP} days..."
+    sudo find /private/var/tmp/* -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print 2>/dev/null || echo "Skipped restricted files in system tmp."
+    find /tmp/* -type f -mtime +${DAYS_TO_KEEP} ! -path "/tmp/tmp-mount-*" -exec rm {} \; -print 2>/dev/null || echo "Skipped restricted tmp files."
+else
+    echo "Skipped temporary files cleanup."
+fi
+
+# Homebrew cleanup
+if command -v brew >/dev/null 2>&1; then
+    if ask_confirmation "Run Homebrew cleanup"; then
+        echo "Running Homebrew cleanup and cache clearing..."
+        brew cleanup --prune=${DAYS_TO_KEEP} || echo "Homebrew cleanup encountered an error."
+        brew autoremove || echo "Homebrew autoremove encountered an error."
+        brew doctor || echo "Homebrew doctor encountered an error."
+    else
+        echo "Skipped Homebrew cleanup."
+    fi
+fi
+
+# Trash cleanup
+if ask_confirmation "Empty Trash"; then
+    echo "Emptying Trash (files older than ${DAYS_TO_KEEP} days)..."
+    find ~/.Trash -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print || echo "Error cleaning Trash."
+    find ~/.Trash -type d -empty -delete 2>/dev/null || echo "Error removing empty Trash directories."
+else
+    echo "Skipped Trash cleanup."
+fi
+
+# Safari cache cleanup
+if ask_confirmation "Clear Safari caches"; then
+    echo "Cleaning Safari caches..."
+    find ~/Library/Safari/LocalStorage -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print 2>/dev/null || echo "Error cleaning Safari LocalStorage."
+    find ~/Library/Safari/WebKit/MediaCache -type f -exec rm {} \; -print 2>/dev/null || echo "Error cleaning Safari MediaCache."
+else
+    echo "Skipped Safari cache cleanup."
+fi
+
+# Spotify cache cleanup
+if ask_confirmation "Clear Spotify cache"; then
+    echo "Cleaning Spotify cache..."
+    find ~/Library/Application\ Support/Spotify/PersistentCache/Storage -type f -mtime +${DAYS_TO_KEEP} -exec rm {} \; -print 2>/dev/null || echo "Error cleaning Spotify cache."
+else
+    echo "Skipped Spotify cache cleanup."
+fi
+
+# Xcode cleanup
+if ask_confirmation "Clear Xcode derived data and archives"; then
+    echo "Cleaning Xcode derived data..."
+    rm -rf ~/Library/Developer/Xcode/DerivedData/* || echo "Error cleaning Xcode derived data."
+    rm -rf ~/Library/Developer/Xcode/Archives/* || echo "Error cleaning Xcode archives."
+else
+    echo "Skipped Xcode cleanup."
+fi
 
 # Node.js cache cleaning
 if command -v npm >/dev/null 2>&1; then
-    echo "Cleaning npm cache..."
-    npm cache clean --force || echo "Error cleaning npm cache."
+    if ask_confirmation "Clean npm cache"; then
+        echo "Cleaning npm cache..."
+        npm cache clean --force || echo "Error cleaning npm cache."
+    else
+        echo "Skipped npm cache cleanup."
+    fi
 fi
 
 if command -v yarn >/dev/null 2>&1; then
-    echo "Cleaning yarn cache..."
-    yarn cache clean || echo "Error cleaning yarn cache."
+    if ask_confirmation "Clean yarn cache"; then
+        echo "Cleaning yarn cache..."
+        yarn cache clean || echo "Error cleaning yarn cache."
+    else
+        echo "Skipped yarn cache cleanup."
+    fi
 fi
 
 # Docker cleanup
 if command -v docker >/dev/null 2>&1; then
-    echo "Checking Docker context..."
-    if ! current_context=$(docker context show 2>/dev/null); then
-        echo "Unable to determine Docker context; assuming local and cleaning."
-        docker system prune -f || echo "Error cleaning Docker system."
-    else
-        if endpoint=$(docker context inspect "$current_context" --format '{{.Endpoints.docker.Host}}' 2>/dev/null); then
-            if [[ "$endpoint" == unix://* ]]; then
-                echo "Cleaning unused Docker data..."
-                docker system prune -f || echo "Error cleaning Docker system."
-            else
-                echo "Docker is using a remote context ($endpoint), skipping cleanup."
-            fi
+    if ask_confirmation "Clean Docker unused data"; then
+        echo "Checking Docker context..."
+        if ! current_context=$(docker context show 2>/dev/null); then
+            echo "Unable to determine Docker context; assuming local and cleaning."
+            docker system prune -f || echo "Error cleaning Docker system."
         else
-            echo "Unable to inspect Docker context; skipping cleanup to avoid potential remote connection."
+            if endpoint=$(docker context inspect "$current_context" --format '{{.Endpoints.docker.Host}}' 2>/dev/null); then
+                if [[ "$endpoint" == unix://* ]]; then
+                    echo "Cleaning unused Docker data..."
+                    docker system prune -f || echo "Error cleaning Docker system."
+                else
+                    echo "Docker is using a remote context ($endpoint), skipping cleanup."
+                fi
+            else
+                echo "Unable to inspect Docker context; skipping cleanup to avoid potential remote connection."
+            fi
         fi
+    else
+        echo "Skipped Docker cleanup."
     fi
 fi
 
 # System memory cleanup
-echo "Purging system memory cache..."
-sudo purge || echo "Error purging system memory."
+if ask_confirmation "Purge system memory cache"; then
+    echo "Purging system memory cache..."
+    sudo purge || echo "Error purging system memory."
+else
+    echo "Skipped system memory cleanup."
+fi
 
 # At the end, before the final message
 echo -e "\nAfter cleanup:"
